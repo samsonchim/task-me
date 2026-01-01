@@ -1,5 +1,3 @@
--- Task Me: minimal schema for tasks
--- Apply in Supabase SQL editor.
 
 create extension if not exists "pgcrypto";
 
@@ -15,8 +13,6 @@ create table if not exists public.tasks (
 
 alter table public.tasks enable row level security;
 
--- Minimal policy: allow anonymous inserts (since the app has no auth yet)
--- WARNING: this means anyone with the anon key can insert rows.
 
 do $$
 begin
@@ -43,3 +39,5 @@ begin
     execute 'create policy "anon can read tasks" on public.tasks for select to anon using (true)';
   end if;
 end $$;
+-- Supabase removed: app now uses local SQLite storage.
+    execute 'create policy "anon can read tasks" on public.tasks for select to anon using (true)';

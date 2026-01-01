@@ -13,14 +13,16 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Picker } from '@react-native-picker/picker';
-import { supabase } from '../lib/supabase';
+import { scheduleAlarmsForTasksAsync } from '../lib/alarms';
+import { addTask } from '../lib/taskStore';
 
 export type CreateTaskPayload = {
   title: string;
   duration: string;
   importance: 'Not too important' | 'Mid' | 'Very Important' | 'Extremely important';
-  category: 'Routine' | 'One-time';
+  category: 'Routine' | 'One-time' | 'Reminder';
   startTime: string;
+  reminderEveryMins?: number;
 };
 
 type CreateTaskScreenProps = {
@@ -35,7 +37,14 @@ const IMPORTANCE_OPTIONS: CreateTaskPayload['importance'][] = [
   'Extremely important',
 ];
 
-const CATEGORY_OPTIONS: CreateTaskPayload['category'][] = ['Routine', 'One-time'];
+const CATEGORY_OPTIONS: CreateTaskPayload['category'][] = ['Routine', 'One-time', 'Reminder'];
+
+const REMINDER_OPTIONS: Array<{ label: string; mins: number }> = [
+  { label: 'Every 15mins', mins: 15 },
+  { label: 'Every 30mins', mins: 30 },
+  { label: 'Every 1hr', mins: 60 },
+  { label: 'Every 4hrs', mins: 240 },
+];
 
 function Segmented<T extends string>({
   value,
@@ -72,6 +81,7 @@ export function CreateTaskScreen({ onCreated, onCancel }: CreateTaskScreenProps)
   const [durationSeconds, setDurationSeconds] = React.useState(0);
   const [importance, setImportance] = React.useState<CreateTaskPayload['importance']>('Mid');
   const [category, setCategory] = React.useState<CreateTaskPayload['category']>('Routine');
+  const [reminderEveryMins, setReminderEveryMins] = React.useState<number>(15);
   const [startTime, setStartTime] = React.useState('');
   const [startTimeDate, setStartTimeDate] = React.useState<Date | null>(null);
   const [showTimePicker, setShowTimePicker] = React.useState(false);
@@ -117,24 +127,38 @@ export function CreateTaskScreen({ onCreated, onCancel }: CreateTaskScreenProps)
       return;
     }
 
-    if (durationHours === 0 && durationMinutes === 0 && durationSeconds === 0) {
+    const startTimeToStore = startTime.trim() || startTimeLabel;
+    if (!startTimeToStore) {
+      setError('Start time is required.');
+      return;
+    }
+
+    const isReminder = category === 'Reminder';
+    if (!isReminder && durationHours === 0 && durationMinutes === 0 && durationSeconds === 0) {
       setError('Duration is required.');
       return;
     }
 
     setSaving(true);
     try {
-      const { error: insertError } = await supabase.from('tasks').insert({
+      const created = await addTask({
         title: trimmedTitle,
-        duration: durationLabel,
+        duration: isReminder ? '0h 0m 0s' : durationLabel,
         importance,
         category,
-        start_time: startTime.trim(),
+        start_time: startTimeToStore,
+        reminder_every_mins: isReminder ? reminderEveryMins : null,
       });
 
-      if (insertError) {
-        throw insertError;
-      }
+      await scheduleAlarmsForTasksAsync([
+        {
+          id: created.id,
+          title: created.title,
+          category: created.category,
+          start_time: created.start_time,
+          reminder_every_mins: created.reminder_every_mins ?? null,
+        },
+      ]);
 
       onCreated();
     } catch (e: any) {
@@ -167,60 +191,79 @@ export function CreateTaskScreen({ onCreated, onCancel }: CreateTaskScreenProps)
           />
         </View>
 
-        <View style={styles.field}>
-          <Text style={styles.label}>Duration</Text>
-          <View style={styles.durationRow}>
-            <View style={styles.durationCol}>
-              <Text style={styles.durationLabel}>Hours</Text>
-              <View style={styles.pickerWrap}>
-                <Picker
-                  selectedValue={durationHours}
-                  onValueChange={(v) => setDurationHours(Number(v))}
-                  dropdownIconColor="#FFFFFF"
-                  style={styles.picker}
-                >
-                  {Array.from({ length: 13 }).map((_, i) => (
-                    <Picker.Item key={i} label={`${i}`} value={i} color={pickerItemColor} />
-                  ))}
-                </Picker>
+        {category !== 'Reminder' ? (
+          <View style={styles.field}>
+            <Text style={styles.label}>Duration</Text>
+            <View style={styles.durationRow}>
+              <View style={styles.durationCol}>
+                <Text style={styles.durationLabel}>Hours</Text>
+                <View style={styles.pickerWrap}>
+                  <Picker
+                    selectedValue={durationHours}
+                    onValueChange={(v) => setDurationHours(Number(v))}
+                    dropdownIconColor="#FFFFFF"
+                    style={styles.picker}
+                  >
+                    {Array.from({ length: 13 }).map((_, i) => (
+                      <Picker.Item key={i} label={`${i}`} value={i} color={pickerItemColor} />
+                    ))}
+                  </Picker>
+                </View>
+              </View>
+
+              <View style={styles.durationCol}>
+                <Text style={styles.durationLabel}>Minutes</Text>
+                <View style={styles.pickerWrap}>
+                  <Picker
+                    selectedValue={durationMinutes}
+                    onValueChange={(v) => setDurationMinutes(Number(v))}
+                    dropdownIconColor="#FFFFFF"
+                    style={styles.picker}
+                  >
+                    {Array.from({ length: 60 }).map((_, i) => (
+                      <Picker.Item key={i} label={`${i}`} value={i} color={pickerItemColor} />
+                    ))}
+                  </Picker>
+                </View>
+              </View>
+
+              <View style={styles.durationCol}>
+                <Text style={styles.durationLabel}>Seconds</Text>
+                <View style={styles.pickerWrap}>
+                  <Picker
+                    selectedValue={durationSeconds}
+                    onValueChange={(v) => setDurationSeconds(Number(v))}
+                    dropdownIconColor="#FFFFFF"
+                    style={styles.picker}
+                  >
+                    {Array.from({ length: 60 }).map((_, i) => (
+                      <Picker.Item key={i} label={`${i}`} value={i} color={pickerItemColor} />
+                    ))}
+                  </Picker>
+                </View>
               </View>
             </View>
 
-            <View style={styles.durationCol}>
-              <Text style={styles.durationLabel}>Minutes</Text>
-              <View style={styles.pickerWrap}>
-                <Picker
-                  selectedValue={durationMinutes}
-                  onValueChange={(v) => setDurationMinutes(Number(v))}
-                  dropdownIconColor="#FFFFFF"
-                  style={styles.picker}
-                >
-                  {Array.from({ length: 60 }).map((_, i) => (
-                    <Picker.Item key={i} label={`${i}`} value={i} color={pickerItemColor} />
-                  ))}
-                </Picker>
-              </View>
-            </View>
-
-            <View style={styles.durationCol}>
-              <Text style={styles.durationLabel}>Seconds</Text>
-              <View style={styles.pickerWrap}>
-                <Picker
-                  selectedValue={durationSeconds}
-                  onValueChange={(v) => setDurationSeconds(Number(v))}
-                  dropdownIconColor="#FFFFFF"
-                  style={styles.picker}
-                >
-                  {Array.from({ length: 60 }).map((_, i) => (
-                    <Picker.Item key={i} label={`${i}`} value={i} color={pickerItemColor} />
-                  ))}
-                </Picker>
-              </View>
-            </View>
+            <Text style={styles.durationPreview}>{durationLabel}</Text>
           </View>
-
-          <Text style={styles.durationPreview}>{durationLabel}</Text>
-        </View>
+        ) : (
+          <View style={styles.field}>
+            <Text style={styles.label}>Every</Text>
+            <View style={styles.pickerWrap}>
+              <Picker
+                selectedValue={reminderEveryMins}
+                onValueChange={(v) => setReminderEveryMins(Number(v))}
+                dropdownIconColor="#FFFFFF"
+                style={styles.picker}
+              >
+                {REMINDER_OPTIONS.map((o) => (
+                  <Picker.Item key={o.mins} label={o.label} value={o.mins} color={pickerItemColor} />
+                ))}
+              </Picker>
+            </View>
+            <Text style={styles.durationPreview}>{REMINDER_OPTIONS.find((o) => o.mins === reminderEveryMins)?.label}</Text>
+          </View>
+        )}
 
         <View style={styles.field}>
           <Text style={styles.label}>Importance</Text>

@@ -1,8 +1,12 @@
 import React from 'react';
 import {
+  Alert,
   Image,
+  Modal,
   Platform,
+  Pressable,
   SafeAreaView,
+  ScrollView,
   StatusBar as RNStatusBar,
   StyleSheet,
   Text,
@@ -12,22 +16,16 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { ProgressRing } from '../ui/ProgressRing';
-import { supabase } from '../lib/supabase';
+import { cancelScheduledAlarmsForTaskAsync, scheduleAlarmsForTasksAsync } from '../lib/alarms';
+import { listTasks, removeTask, type LocalTask } from '../lib/taskStore';
 
-type TaskRow = {
-  id: string;
-  title: string;
-  duration: string | null;
-  importance: string;
-  category: string;
-  start_time: string | null;
-  created_at: string;
-};
+type TaskRow = LocalTask;
 
 type TaskVM = {
   id: string;
   title: string;
   duration: string;
+  everyLabel?: string;
   importance: string;
   category: string;
   started: string;
@@ -118,18 +116,39 @@ function formatGreetingDate(date: Date) {
   return `${greeting}, ${weekday} ${month} ${day}, ${year}`;
 }
 
-function TaskCard({ task }: { task: TaskVM }) {
+function getNextReminderOccurrence(start: Date, everyMins: number, now: Date) {
+  const intervalMs = everyMins * 60 * 1000;
+  if (intervalMs <= 0) return start;
+  if (now.getTime() < start.getTime()) return start;
+  const elapsed = now.getTime() - start.getTime();
+  const k = Math.ceil(elapsed / intervalMs);
+  return new Date(start.getTime() + k * intervalMs);
+}
+
+function TaskCard({ task, onDelete }: { task: TaskVM; onDelete: (id: string) => void }) {
   const percentLabel = `${Math.round(task.progress * 100)}%`;
 
   return (
-    <View style={styles.card}>
+    <TouchableOpacity
+      activeOpacity={0.9}
+      onLongPress={() => onDelete(task.id)}
+      accessibilityRole="button"
+      style={styles.card}
+    >
       <View style={styles.cardLeft}>
         <Text style={styles.cardTitle}>{task.title}</Text>
 
-        <Text style={styles.metaLine}>
-          <Text style={styles.metaLabel}>Duration: </Text>
-          <Text style={styles.metaValueRed}>{task.duration}</Text>
-        </Text>
+        {task.everyLabel ? (
+          <Text style={styles.metaLine}>
+            <Text style={styles.metaLabel}>Every: </Text>
+            <Text style={styles.metaValueRed}>{task.everyLabel}</Text>
+          </Text>
+        ) : (
+          <Text style={styles.metaLine}>
+            <Text style={styles.metaLabel}>Duration: </Text>
+            <Text style={styles.metaValueRed}>{task.duration}</Text>
+          </Text>
+        )}
 
         <Text style={styles.metaLine}>
           <Text style={styles.metaLabel}>Importance: </Text>
@@ -157,7 +176,7 @@ function TaskCard({ task }: { task: TaskVM }) {
           label={percentLabel}
         />
       </View>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -171,23 +190,53 @@ export function HomeScreen({ onPressCreate }: HomeScreenProps) {
   const [error, setError] = React.useState<string | null>(null);
   const [rows, setRows] = React.useState<TaskRow[]>([]);
   const [tick, setTick] = React.useState(0);
+  const [sidebarVisible, setSidebarVisible] = React.useState(false);
 
   const fetchTasks = React.useCallback(async () => {
     setError(null);
     setLoading(true);
     try {
-      const { data, error: qErr } = await supabase
-        .from('tasks')
-        .select('id,title,duration,importance,category,start_time,created_at');
+      const next = await listTasks();
+      setRows(next);
 
-      if (qErr) throw qErr;
-      setRows((data ?? []) as TaskRow[]);
+      // best-effort scheduling (safe if called multiple times)
+      await scheduleAlarmsForTasksAsync(
+        next.map((t) => ({
+          id: t.id,
+          title: t.title,
+          category: t.category,
+          start_time: t.start_time,
+          reminder_every_mins: t.reminder_every_mins ?? null,
+        }))
+      );
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load tasks.');
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const onDeleteTask = React.useCallback(
+    (taskId: string) => {
+      Alert.alert('Delete task?', 'This will remove the task permanently.', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await cancelScheduledAlarmsForTaskAsync(taskId);
+              await removeTask(taskId);
+              await fetchTasks();
+            } catch (e: any) {
+              setError(e?.message ?? 'Failed to delete task.');
+            }
+          },
+        },
+      ]);
+    },
+    [fetchTasks]
+  );
 
   React.useEffect(() => {
     fetchTasks();
@@ -205,6 +254,9 @@ export function HomeScreen({ onPressCreate }: HomeScreenProps) {
     const list: TaskVM[] = [];
 
     for (const row of rows) {
+      const isReminder = (row.category ?? '').toLowerCase().includes('reminder');
+      const reminderEvery = row.reminder_every_mins ?? null;
+
       const durationMs = parseDurationMs(row.duration);
       const startToday = parseStartTimeToToday(row.start_time, now);
       if (!startToday || durationMs <= 0) {
@@ -213,6 +265,7 @@ export function HomeScreen({ onPressCreate }: HomeScreenProps) {
           id: row.id,
           title: row.title,
           duration: row.duration ?? '',
+          everyLabel: isReminder && reminderEvery ? `${reminderEvery}mins` : undefined,
           importance: row.importance,
           category: row.category,
           started: row.start_time ? `${row.start_time}` : '—',
@@ -230,23 +283,30 @@ export function HomeScreen({ onPressCreate }: HomeScreenProps) {
       let sortTime = startToday;
       let startedLabel = `${formatTimeLabel(startToday)} (${formatRelative(startToday, now)})`;
 
-      if (now < startToday) {
+      if (isReminder && reminderEvery) {
+        const next = getNextReminderOccurrence(startToday, reminderEvery, now);
         progress = 0;
-      } else if (now >= startToday && now <= endToday) {
-        progress = clamp01((now.getTime() - startToday.getTime()) / durationMs);
-      } else {
-        // past end
-        if (isOneTime && !isRoutine) {
-          // one-time completed: do not appear in open list
-          continue;
-        }
-
-        // routine: reset for next day
-        progress = 0;
-        const next = new Date(startToday);
-        next.setDate(next.getDate() + 1);
         sortTime = next;
-        startedLabel = `${formatTimeLabel(next)} (tomorrow)`;
+        startedLabel = `${formatTimeLabel(next)} (${formatRelative(next, now)})`;
+      } else {
+        if (now < startToday) {
+          progress = 0;
+        } else if (now >= startToday && now <= endToday) {
+          progress = clamp01((now.getTime() - startToday.getTime()) / durationMs);
+        } else {
+          // past end
+          if (isOneTime && !isRoutine) {
+            // one-time completed: do not appear in open list
+            continue;
+          }
+
+          // routine: reset for next day
+          progress = 0;
+          const next = new Date(startToday);
+          next.setDate(next.getDate() + 1);
+          sortTime = next;
+          startedLabel = `${formatTimeLabel(next)} (tomorrow)`;
+        }
       }
 
       const sortKey = Math.abs(sortTime.getTime() - now.getTime());
@@ -254,6 +314,7 @@ export function HomeScreen({ onPressCreate }: HomeScreenProps) {
         id: row.id,
         title: row.title,
         duration: row.duration ?? '',
+        everyLabel: isReminder && reminderEvery ? `${reminderEvery}mins` : undefined,
         importance: row.importance,
         category: row.category,
         started: startedLabel,
@@ -264,6 +325,21 @@ export function HomeScreen({ onPressCreate }: HomeScreenProps) {
 
     list.sort((a, b) => a.sortKey - b.sortKey);
     return list;
+  }, [rows, tick]);
+
+  const completedOneTime = React.useMemo(() => {
+    void tick;
+    const now = new Date();
+    return rows
+      .filter((r) => (r.category ?? '').toLowerCase().includes('one'))
+      .filter((r) => {
+        const startToday = parseStartTimeToToday(r.start_time, now);
+        const dur = parseDurationMs(r.duration);
+        if (!startToday || dur <= 0) return false;
+        const end = new Date(startToday.getTime() + dur);
+        return now.getTime() > end.getTime();
+      })
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
   }, [rows, tick]);
 
   return (
@@ -279,7 +355,7 @@ export function HomeScreen({ onPressCreate }: HomeScreenProps) {
         <TouchableOpacity
           style={styles.headerMenu}
           accessibilityRole="button"
-          onPress={fetchTasks}
+          onPress={() => setSidebarVisible(true)}
           disabled={loading}
         >
           <Ionicons name="menu" size={22} color="#FFFFFF" />
@@ -287,15 +363,43 @@ export function HomeScreen({ onPressCreate }: HomeScreenProps) {
       </View>
       <View style={styles.list}>
         {tasks.map((task) => (
-          <TaskCard key={task.id} task={task} />
+          <TaskCard key={task.id} task={task} onDelete={onDeleteTask} />
         ))}
       </View>
 
+      <Modal visible={sidebarVisible} transparent animationType="fade" statusBarTranslucent>
+        <Pressable style={styles.sidebarBackdrop} onPress={() => setSidebarVisible(false)}>
+          <Pressable style={styles.sidebarPanel} onPress={() => {}}>
+            <View style={styles.sidebarHeader}>
+              <Text style={styles.sidebarTitle}>Completed One-time ({completedOneTime.length})</Text>
+              <TouchableOpacity accessibilityRole="button" onPress={() => setSidebarVisible(false)}>
+                <Text style={styles.sidebarClose}>Close</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.sidebarList}>
+              {completedOneTime.map((t) => (
+                <TouchableOpacity
+                  key={t.id}
+                  activeOpacity={0.9}
+                  onLongPress={() => onDeleteTask(t.id)}
+                  style={styles.sidebarItem}
+                >
+                  <Text style={styles.sidebarItemTitle}>{t.title}</Text>
+                  <Text style={styles.sidebarItemMeta}>{t.start_time} • {t.duration}</Text>
+                </TouchableOpacity>
+              ))}
+
+              {completedOneTime.length === 0 ? (
+                <Text style={styles.sidebarEmpty}>No completed one-time tasks yet.</Text>
+              ) : null}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <View style={styles.bottomBar}>
         <View style={styles.bottomBarInner}>
-          <TouchableOpacity style={[styles.bottomBtn, styles.bottomBtnActive]} accessibilityRole="button">
-            <Image source={require('../../assets/open.png')} style={styles.bottomIcon} resizeMode="contain" />
-          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.bottomBtn, styles.bottomBtnCenter]}
             accessibilityRole="button"
@@ -304,13 +408,6 @@ export function HomeScreen({ onPressCreate }: HomeScreenProps) {
             <Image
               source={require('../../assets/creaate.png')}
               style={[styles.bottomIcon, styles.bottomIconCenter]}
-              resizeMode="contain"
-            />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomBtn} accessibilityRole="button">
-            <Image
-              source={require('../../assets/complete.png')}
-              style={styles.bottomIcon}
               resizeMode="contain"
             />
           </TouchableOpacity>
@@ -361,6 +458,69 @@ const styles = StyleSheet.create({
   list: {
     paddingHorizontal: 18,
     paddingTop: 6,
+  },
+  sidebarBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.70)',
+    flexDirection: 'row',
+  },
+  sidebarPanel: {
+    width: 300,
+    maxWidth: '86%',
+    height: '100%',
+    backgroundColor: '#000000',
+    borderRightWidth: 1,
+    borderRightColor: 'rgba(255,255,255,0.12)',
+    paddingTop: (Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) : 0) + 18,
+    paddingHorizontal: 16,
+  },
+  sidebarHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.10)',
+  },
+  sidebarTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontFamily: 'Poppins_900Black',
+  },
+  sidebarClose: {
+    color: '#D32F2F',
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+  },
+  sidebarList: {
+    paddingTop: 12,
+    paddingBottom: 24,
+  },
+  sidebarItem: {
+    backgroundColor: '#1F1F1F',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+  },
+  sidebarItemTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontFamily: 'Poppins_900Black',
+    marginBottom: 2,
+  },
+  sidebarItemMeta: {
+    color: '#BDBDBD',
+    fontSize: 11,
+    fontFamily: 'Poppins_400Regular',
+  },
+  sidebarEmpty: {
+    color: '#BDBDBD',
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    paddingTop: 10,
   },
   card: {
     backgroundColor: '#303030',
@@ -425,7 +585,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 10,
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignItems: 'center',
   },
   bottomBtn: {
