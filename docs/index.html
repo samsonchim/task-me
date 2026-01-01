@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Task Me</title>
+    <meta name="description" content="Task Me helps you create tasks, stay focused, and get reminders when it’s time to work." />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container">
+        <div class="brand" aria-label="Task Me">
+          <span class="dot" aria-hidden="true"></span>
+          <h1>Task Me</h1>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="container">
+          <div class="hero-grid">
+            <div>
+              <div class="kicker"><strong>Task Me</strong> · Stay on track</div>
+              <h2 class="title">
+                Plan your day.
+                <br />
+                Get reminders.
+                <br />
+                <span class="accent">Finish strong.</span>
+              </h2>
+              <p class="subtitle">
+                Task Me is a simple task and reminder app that helps you create tasks (routine, one-time, and reminders)
+                and notifies you when it’s time to focus.
+              </p>
+            </div>
+
+            <div class="card cta-card" role="region" aria-label="Downloads">
+              <div class="cta-row">
+                <a class="btn btn-android" href="./apk/task-me.apk" download>
+                  Download APK (Android)
+                </a>
+                <button class="btn btn-ios" id="iosDownloadBtn" type="button">
+                  Download (iOS)
+                </button>
+              </div>
+              <p class="small">
+                Android: tap to download the APK.
+                <br />
+                iOS: coming soon.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="divider" role="presentation"></div>
+
+      <section class="features">
+        <div class="container">
+          <div class="feature-grid">
+            <div class="card feature">
+              <h3>Offline tasks</h3>
+              <p>Save tasks on your device so you can use the app anywhere.</p>
+            </div>
+            <div class="card feature">
+              <h3>Reminders that repeat</h3>
+              <p>Create reminder tasks and get notifications at your chosen interval.</p>
+            </div>
+            <div class="card feature">
+              <h3>Fast and simple</h3>
+              <p>Create tasks quickly and focus on what matters.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="container">
+        Message me on WhatsApp: <a href="https://wa.me/2349114172014" target="_blank" rel="noreferrer">+2349114172014</a>
+      </div>
+    </footer>
+
+    <div class="modal-backdrop" id="iosModal" data-open="false" aria-hidden="true">
+      <div class="card modal" role="dialog" aria-modal="true" aria-labelledby="iosModalTitle">
+        <h4 id="iosModalTitle">Omo, I forgot to build for IOS</h4>
+        <p>Android is available right now. iOS build is coming soon.</p>
+        <div class="modal-actions">
+          <button class="btn btn-ios btn-close" id="closeModalBtn" type="button">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const iosDownloadBtn = document.getElementById('iosDownloadBtn');
+      const iosModal = document.getElementById('iosModal');
+      const closeModalBtn = document.getElementById('closeModalBtn');
+
+      function openModal() {
+        iosModal.dataset.open = 'true';
+        iosModal.setAttribute('aria-hidden', 'false');
+      }
+
+      function closeModal() {
+        iosModal.dataset.open = 'false';
+        iosModal.setAttribute('aria-hidden', 'true');
+      }
+
+      iosDownloadBtn.addEventListener('click', openModal);
+      closeModalBtn.addEventListener('click', closeModal);
+      iosModal.addEventListener('click', (e) => {
+        if (e.target === iosModal) closeModal();
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeModal();
+      });
+    </script>
+  </body>
+</html>
