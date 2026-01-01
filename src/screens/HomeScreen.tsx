@@ -12,8 +12,19 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { ProgressRing } from '../ui/ProgressRing';
+import { supabase } from '../lib/supabase';
 
-type Task = {
+type TaskRow = {
+  id: string;
+  title: string;
+  duration: string | null;
+  importance: string;
+  category: string;
+  start_time: string | null;
+  created_at: string;
+};
+
+type TaskVM = {
   id: string;
   title: string;
   duration: string;
@@ -21,28 +32,79 @@ type Task = {
   category: string;
   started: string;
   progress: number; // 0..1
+  sortKey: number;
 };
 
-const tasks: Task[] = [
-  {
-    id: '1',
-    title: 'Study CSC 301',
-    duration: '2hrs',
-    importance: 'Extreme',
-    category: 'Routine',
-    started: '7:00am (1hr 30mins ago)',
-    progress: 0.75,
-  },
-  {
-    id: '2',
-    title: 'Edit Landing Page on Yielddx',
-    duration: '2hrs',
-    importance: 'Skip-able',
-    category: 'Routine',
-    started: '8:40am (1hr 30mins later)',
-    progress: 0,
-  },
-];
+function clamp01(n: number) {
+  return Math.max(0, Math.min(1, n));
+}
+
+function parseDurationMs(duration: string | null) {
+  if (!duration) return 0;
+
+  const normalized = duration.trim();
+  // supports "2h 30m 10s"
+  const h = normalized.match(/(\d+)\s*h/i);
+  const m = normalized.match(/(\d+)\s*m/i);
+  const s = normalized.match(/(\d+)\s*s/i);
+  const hours = h ? Number(h[1]) : 0;
+  const minutes = m ? Number(m[1]) : 0;
+  const seconds = s ? Number(s[1]) : 0;
+  return ((hours * 60 + minutes) * 60 + seconds) * 1000;
+}
+
+function parseStartTimeToToday(startTime: string | null, now: Date) {
+  if (!startTime) return null;
+  const raw = startTime.trim();
+
+  // Accept "7:00 AM", "7:00am", "07:00", "7:00"
+  const ampm = raw.match(/\b(am|pm)\b/i);
+  const timePart = raw.replace(/\s*(am|pm)\s*/i, '').trim();
+  const parts = timePart.split(':');
+  if (parts.length < 1) return null;
+
+  const hourRaw = Number(parts[0]);
+  const minuteRaw = parts.length >= 2 ? Number(parts[1]) : 0;
+  if (Number.isNaN(hourRaw) || Number.isNaN(minuteRaw)) return null;
+
+  let hour = hourRaw;
+  const minute = minuteRaw;
+
+  if (ampm) {
+    const meridiem = ampm[1].toLowerCase();
+    if (meridiem === 'am') {
+      if (hour === 12) hour = 0;
+    } else {
+      if (hour !== 12) hour += 12;
+    }
+  }
+
+  const d = new Date(now);
+  d.setHours(hour, minute, 0, 0);
+  return d;
+}
+
+function formatTimeLabel(date: Date) {
+  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date);
+}
+
+function formatRelative(from: Date, to: Date) {
+  const diffMs = to.getTime() - from.getTime();
+  const abs = Math.abs(diffMs);
+  const mins = Math.round(abs / 60000);
+
+  if (mins < 1) return diffMs >= 0 ? 'just now' : 'in a moment';
+  if (mins < 60) return diffMs >= 0 ? `${mins}mins ago` : `in ${mins}mins`;
+
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  if (hours < 24) {
+    return diffMs >= 0 ? `${hours}hr ${rem}mins ago` : `in ${hours}hr ${rem}mins`;
+  }
+
+  const days = Math.floor(hours / 24);
+  return diffMs >= 0 ? `${days}d ago` : `in ${days}d`;
+}
 
 function formatGreetingDate(date: Date) {
   const hour = date.getHours();
@@ -56,7 +118,7 @@ function formatGreetingDate(date: Date) {
   return `${greeting}, ${weekday} ${month} ${day}, ${year}`;
 }
 
-function TaskCard({ task }: { task: Task }) {
+function TaskCard({ task }: { task: TaskVM }) {
   const percentLabel = `${Math.round(task.progress * 100)}%`;
 
   return (
@@ -99,8 +161,110 @@ function TaskCard({ task }: { task: Task }) {
   );
 }
 
-export function HomeScreen() {
+export type HomeScreenProps = {
+  onPressCreate: () => void;
+};
+
+export function HomeScreen({ onPressCreate }: HomeScreenProps) {
   const subtitle = React.useMemo(() => formatGreetingDate(new Date()), []);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [rows, setRows] = React.useState<TaskRow[]>([]);
+  const [tick, setTick] = React.useState(0);
+
+  const fetchTasks = React.useCallback(async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const { data, error: qErr } = await supabase
+        .from('tasks')
+        .select('id,title,duration,importance,category,start_time,created_at');
+
+      if (qErr) throw qErr;
+      setRows((data ?? []) as TaskRow[]);
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to load tasks.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchTasks();
+  }, [fetchTasks]);
+
+  React.useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const tasks = React.useMemo<TaskVM[]>(() => {
+    // re-compute every tick
+    void tick;
+    const now = new Date();
+    const list: TaskVM[] = [];
+
+    for (const row of rows) {
+      const durationMs = parseDurationMs(row.duration);
+      const startToday = parseStartTimeToToday(row.start_time, now);
+      if (!startToday || durationMs <= 0) {
+        // keep visible but 0% if incomplete data
+        list.push({
+          id: row.id,
+          title: row.title,
+          duration: row.duration ?? '',
+          importance: row.importance,
+          category: row.category,
+          started: row.start_time ? `${row.start_time}` : '—',
+          progress: 0,
+          sortKey: Number.POSITIVE_INFINITY,
+        });
+        continue;
+      }
+
+      const endToday = new Date(startToday.getTime() + durationMs);
+      const isRoutine = row.category.toLowerCase().includes('routine');
+      const isOneTime = row.category.toLowerCase().includes('one');
+
+      let progress = 0;
+      let sortTime = startToday;
+      let startedLabel = `${formatTimeLabel(startToday)} (${formatRelative(startToday, now)})`;
+
+      if (now < startToday) {
+        progress = 0;
+      } else if (now >= startToday && now <= endToday) {
+        progress = clamp01((now.getTime() - startToday.getTime()) / durationMs);
+      } else {
+        // past end
+        if (isOneTime && !isRoutine) {
+          // one-time completed: do not appear in open list
+          continue;
+        }
+
+        // routine: reset for next day
+        progress = 0;
+        const next = new Date(startToday);
+        next.setDate(next.getDate() + 1);
+        sortTime = next;
+        startedLabel = `${formatTimeLabel(next)} (tomorrow)`;
+      }
+
+      const sortKey = Math.abs(sortTime.getTime() - now.getTime());
+      list.push({
+        id: row.id,
+        title: row.title,
+        duration: row.duration ?? '',
+        importance: row.importance,
+        category: row.category,
+        started: startedLabel,
+        progress,
+        sortKey,
+      });
+    }
+
+    list.sort((a, b) => a.sortKey - b.sortKey);
+    return list;
+  }, [rows, tick]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -108,10 +272,16 @@ export function HomeScreen() {
 
       <View style={styles.header}>
         <View style={styles.headerTextBlock}>
-          <Text style={styles.headerTitle}>Open Tasks (9)</Text>
+          <Text style={styles.headerTitle}>Open Tasks ({tasks.length})</Text>
           <Text style={styles.headerSubtitle}>{subtitle}</Text>
+          {error ? <Text style={styles.headerError}>{error}</Text> : null}
         </View>
-        <TouchableOpacity style={styles.headerMenu} accessibilityRole="button">
+        <TouchableOpacity
+          style={styles.headerMenu}
+          accessibilityRole="button"
+          onPress={fetchTasks}
+          disabled={loading}
+        >
           <Ionicons name="menu" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
@@ -126,7 +296,11 @@ export function HomeScreen() {
           <TouchableOpacity style={[styles.bottomBtn, styles.bottomBtnActive]} accessibilityRole="button">
             <Image source={require('../../assets/open.png')} style={styles.bottomIcon} resizeMode="contain" />
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.bottomBtn, styles.bottomBtnCenter]} accessibilityRole="button">
+          <TouchableOpacity
+            style={[styles.bottomBtn, styles.bottomBtnCenter]}
+            accessibilityRole="button"
+            onPress={onPressCreate}
+          >
             <Image
               source={require('../../assets/creaate.png')}
               style={[styles.bottomIcon, styles.bottomIconCenter]}
@@ -177,6 +351,12 @@ const styles = StyleSheet.create({
     width: 34,
     alignItems: 'flex-end',
     paddingTop: 2,
+  },
+  headerError: {
+    marginTop: 6,
+    color: '#D32F2F',
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
   },
   list: {
     paddingHorizontal: 18,

@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet, Text } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, ClipPath, Defs, Rect } from 'react-native-svg';
 
 type ProgressRingProps = {
@@ -13,6 +13,7 @@ type ProgressRingProps = {
 
 export function ProgressRing({
   size,
+  strokeWidth: _strokeWidth,
   progress,
   trackColor,
   progressColor,
@@ -28,7 +29,7 @@ export function ProgressRing({
       <View style={[styles.circleContainer, { width: size, height: size }]}>
         <Svg width={size} height={size} style={styles.svg}>
           <Defs>
-            <ClipPath id="clip">
+            <ClipPath id="clipCircle">
               <Circle cx={radius} cy={radius} r={radius} />
             </ClipPath>
           </Defs>
@@ -41,7 +42,7 @@ export function ProgressRing({
               width={size}
               height={fillHeight}
               fill={progressColor}
-              clipPath="url(#clip)"
+              clipPath="url(#clipCircle)"
             />
           ) : null}
         </Svg>
@@ -72,7 +73,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   percentText: {
-    color: '#FFFFFF',
+    color: '#000000',
     fontSize: 20,
     fontFamily: 'Poppins_900Black',
   },
